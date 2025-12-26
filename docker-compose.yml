@@ -1,6 +1,6 @@
 services:
   bresser-bridge:
-    build .
+    build: .
     container_name: bresser_mqtt_bridge
     restart: unless-stopped
     network_mode: host
@@ -11,7 +11,7 @@ services:
       - MQTT_PORT=1883
       - MQTT_TOPIC=bresser
       - MQTT_USER=bresser
-      - MQTT_PASS=123456789
+      - MQTT_PASS=${MQTT_PASS}
       - ENABLE_ARP=true
       - TARGET_IP=192.168.178.110
       - ROUTER_IP=192.168.178.1
