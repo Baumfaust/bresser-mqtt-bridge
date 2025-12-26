@@ -127,25 +127,25 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _parse(self, params):
         """Map Bresser query parameters to readable sensor names."""
+        # Note: Bresser often sends 'temp' instead of 'tp1tm' depending on firmware
         mapping = {
-            # Indoor Console
-            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 
+            'tmi': 'indoor_temp', 'hui': 'indoor_humidity',
             'relbi': 'pressure_rel', 'absbi': 'pressure_abs',
-            
-            # Outdoor 7-in-1 (Type 1)
-            'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity', 
-            'tp1wdir': 'wind_direction', 'tp1wsp': 'wind_speed', 
-            'tp1wgu': 'wind_gust', 'tp1rinrte': 'rain_rate', 
-            'tp1rindaly': 'rain_daily', 'tp1uvi': 'uv_index', 
-            'tp1sod': 'solar_radiation', 'tp1bt': 'battery_ok',
-            
-            # System
-            'wsid': 'station_id'
+            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 
+            'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity',
+            'tp1wdir': 'wind_direction', 'wdir': 'wind_direction',
+            'tp1wsp': 'wind_speed', 'wind': 'wind_speed',
+            'tp1wgu': 'wind_gust', 'gust': 'wind_gust',
+            'tp1rinrte': 'rain_rate', 'rain': 'rain_rate',
+            'tp1rindaly': 'rain_daily', 'dailyrain': 'rain_daily',
+            'tp1uvi': 'uv_index', 'uv': 'uv_index',
+            'tp1sod': 'solar_radiation', 'solarradiation': 'solar_radiation',
+            'tp1bt': 'battery_ok', 'wsid': 'station_id'
         }
         res = {}
         for b_key, r_key in mapping.items():
             if b_key in params:
-                try: 
+                try:
                     val = params[b_key][0]
                     res[r_key] = float(val) if '.' in val else int(val)
                 except (ValueError, IndexError):
