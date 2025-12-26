@@ -15,9 +15,9 @@ A professional-grade local bridge for Bresser/CCL weather stations. This project
 
 This bridge utilizes several networking techniques to "liberate" your weather data:
 
-1. ** ARP Spoofing **: The server acts as a gateway for the station to intercept outgoing traffic.
-2. ** SSL Interception **: A Python-based proxy uses a self-signed certificate to decrypt the station's data (exploiting the lack of certificate validation in IoT firmware).
-3. ** MQTT Bridge (ª*: Extracted sensor data is published as a JSON payload to your MQTT broker.
+1. **ARP Spoofing**: The server acts as a gateway for the station to intercept outgoing traffic.
+2. **SSL Interception**: A Python-based proxy uses a self-signed certificate to decrypt the station's data (exploiting the lack of certificate validation in IoT firmware).
+3. **MQTT Bridge**: Extracted sensor data is published as a JSON payload to your MQTT broker.
 
 ## 📦 Installation & Setup
 
