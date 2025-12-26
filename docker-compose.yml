@@ -1,6 +1,6 @@
 services:
   bresser-bridge:
-    image: bresser-mqtt-bridge:latest
+    build .
     container_name: bresser_mqtt_bridge
     restart: unless-stopped
     network_mode: host
@@ -8,6 +8,7 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - MQTT_BROKER=192.168.178.2
+      - MQTT_PORT=1883
       - MQTT_TOPIC=bresser
       - MQTT_USER=bresser
       - MQTT_PASS=123456789

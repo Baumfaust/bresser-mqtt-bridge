@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Bresser-Local-Bridge
-A professional transparent proxy with Home Assistant Auto-Discovery.
+Bresser-Local-Bridge v0.1
+Transparent HTTPS Proxy with Persistent MQTT and HA Auto-Discovery.
 """
 
 import http.server
@@ -15,80 +15,58 @@ import sys
 import requests
 import paho.mqtt.client as mqtt
 
-# --- CONFIGURATION & ENV VARIABLES ---
+# --- CONFIGURATION ---
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-MQTT_BROKER = os.getenv('MQTT_BROKER', '192.168.178.50')
+MQTT_BROKER = os.getenv('MQTT_BROKER', '192.168.178.2')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
 MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'home/weather/bresser')
 MQTT_USER = os.getenv('MQTT_USER', None)
 MQTT_PASS = os.getenv('MQTT_PASS', None)
 DISCOVERY_PREFIX = os.getenv('DISCOVERY_PREFIX', 'homeassistant')
 REAL_SERVER_URL = "https://api.proweatherlive.net"
-CERT_FILE = os.getenv('CERT_FILE', 'server.pem')
+CERT_FILE = "/app/certs/server.pem"
 
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+logging.basicConfig(level=getattr(logging, LOG_LEVEL), format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("WeatherBridge")
 
-class BresserTransparentProxy(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self._process_request()
+# --- PERSISTENT MQTT CLIENT ---
+class WeatherMQTTClient:
+    def __init__(self):
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        if MQTT_USER and MQTT_PASS:
+            self.client.username_pw_set(MQTT_USER, MQTT_PASS)
+        
+        self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
+        self.is_connected = False
 
-    def do_POST(self):
-        self._process_request()
+    def _on_connect(self, client, userdata, flags, rc, properties=None):
+        if rc == 0:
+            logger.info("✅ MQTT: Connected successfully")
+            self.is_connected = True
+            send_discovery(self.client)
+        else:
+            logger.error(f"❌ MQTT: Connection failed (Code {rc})")
 
-    def _process_request(self):
-        query_params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        extracted_data = self._parse_bresser_data(query_params)
+    def _on_disconnect(self, client, userdata, disconnect_flags, rc, properties=None):
+        self.is_connected = False
+        logger.warning("⚠️ MQTT: Disconnected. Trying to reconnect...")
 
-        if extracted_data:
-            logger.info(f"Captured data for Station {extracted_data.get('station_id', 'Unknown')}")
-            threading.Thread(target=publish_to_mqtt, args=(extracted_data,), daemon=True).start()
+    def start(self):
+        self.client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
+        self.client.loop_start()
 
-        self._forward_to_cloud()
+    def publish(self, data):
+        if self.is_connected:
+            self.client.publish(MQTT_TOPIC, json.dumps(data), qos=1)
+            logger.debug("MQTT: Data published")
+        else:
+            logger.warning("MQTT: Client not connected, data dropped")
 
-    def _forward_to_cloud(self):
-        target_url = f"{REAL_SERVER_URL}{self.path}"
-        try:
-            response = requests.get(target_url, timeout=10)
-            self.send_response(response.status_code)
-            for key, value in response.headers.items():
-                if key.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
-                    self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(response.content)
-        except Exception as e:
-            logger.error(f"Failed to relay to ProWeatherLive: {e}")
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"success")
+mqtt_bridge = WeatherMQTTClient()
 
-    def _parse_bresser_data(self, params):
-        mapping = {
-            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 'relbi': 'pressure_rel',
-            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 'wind': 'wind_speed',
-            'gust': 'wind_gust', 'rain': 'rain_rate', 'dailyrain': 'rain_daily',
-            'uv': 'uv_index', 'solarradiation': 'solar_radiation', 'tp1bt': 'battery_ok',
-            'wsid': 'station_id'
-        }
-        data = {}
-        for b_key, r_key in mapping.items():
-            if b_key in params:
-                try:
-                    val = params[b_key][0]
-                    data[r_key] = float(val) if '.' in val else int(val)
-                except ValueError:
-                    data[r_key] = val
-        return data
-
-    def log_message(self, format, *args): return
-
-def send_discovery():
-    """Sends MQTT Discovery payloads so HA creates sensors automatically."""
+# --- AUTO DISCOVERY ---
+def send_discovery(client):
     sensors = [
         {"id": "indoor_temp", "name": "Indoor Temperature", "unit": "°C", "class": "temperature"},
         {"id": "indoor_humidity", "name": "Indoor Humidity", "unit": "%", "class": "humidity"},
@@ -99,68 +77,74 @@ def send_discovery():
         {"id": "battery_ok", "name": "Battery Status", "unit": None, "class": "battery"}
     ]
     
-    try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        if MQTT_USER and MQTT_PASS: client.username_pw_set(MQTT_USER, MQTT_PASS)
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-
-        for s in sensors:
-            config_topic = f"{DISCOVERY_PREFIX}/sensor/bresser_{s['id']}/config"
-            payload = {
-                "name": f"Bresser {s['name']}",
-                "state_topic": MQTT_TOPIC,
-                "value_template": f"{{{{ value_json.{s['id']} }}}}",
-                "unique_id": f"bresser_ws_{s['id']}",
-                "device": {
-                    "identifiers": ["bresser_weather_station"],
-                    "name": "Bresser Weather Station",
-                    "model": "7-in-1 Station",
-                    "manufacturer": "Bresser"
-                }
+    for s in sensors:
+        config_topic = f"{DISCOVERY_PREFIX}/sensor/bresser_{s['id']}/config"
+        payload = {
+            "name": f"Bresser {s['name']}",
+            "state_topic": MQTT_TOPIC,
+            "value_template": f"{{{{ value_json.{s['id']} }}}}",
+            "unique_id": f"bresser_ws_{s['id']}",
+            "device": {
+                "identifiers": ["bresser_weather_station"],
+                "name": "Bresser Weather Station",
+                "manufacturer": "Bresser",
+                "model": "7-in-1 Station"
             }
-            if s['unit']: payload["unit_of_measurement"] = s['unit']
-            if s['class']: payload["device_class"] = s['class']
-            
-            client.publish(config_topic, json.dumps(payload), retain=True)
-        
-        client.disconnect()
-        logger.info("📡 Home Assistant Discovery payloads sent.")
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
+        }
+        if s['unit']: payload["unit_of_measurement"] = s['unit']
+        if s['class']: payload["device_class"] = s['class']
+        client.publish(config_topic, json.dumps(payload), retain=True)
 
-def publish_to_mqtt(data):
-    try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        if MQTT_USER and MQTT_PASS: client.username_pw_set(MQTT_USER, MQTT_PASS)
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.publish(MQTT_TOPIC, json.dumps(data))
-        client.disconnect()
-        logger.debug(f"Data published to MQTT: {MQTT_TOPIC}")
-    except Exception as e:
-        logger.error(f"MQTT Publish failed: {e}")
+# --- PROXY HANDLER ---
+class BresserProxy(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        data = self._parse(query)
+        if data:
+            logger.info(f"Captured data for station: {data.get('station_id')}")
+            mqtt_bridge.publish(data)
+        self._relay()
 
-def start_proxy():
-    if not os.path.exists(CERT_FILE):
-        logger.critical(f"Certificate file {CERT_FILE} not found.")
-        sys.exit(1)
+    def _parse(self, params):
+        mapping = {
+            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 'relbi': 'pressure_rel',
+            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 'wind': 'wind_speed',
+            'tp1bt': 'battery_ok', 'wsid': 'station_id'
+        }
+        res = {}
+        for b, r in mapping.items():
+            if b in params:
+                try: res[r] = float(params[b][0]) if '.' in params[b][0] else int(params[b][0])
+                except: res[r] = params[b][0]
+        return res if 'station_id' in res else None
 
-    # Send discovery in a background thread at startup
-    threading.Thread(target=send_discovery, daemon=True).start()
+    def _relay(self):
+        try:
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
+            self.send_response(r.status_code)
+            for k, v in r.headers.items():
+                if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(r.content)
+        except Exception as e:
+            logger.error(f"Relay failed: {e}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"success")
 
-    server_address = ('', 443)
-    httpd = http.server.HTTPServer(server_address, BresserTransparentProxy)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1
-    try: context.set_ciphers('DEFAULT:@SECLEVEL=0')
-    except: context.set_ciphers('ALL:!aNULL:!eNULL')
-    context.load_cert_chain(certfile=CERT_FILE)
-    httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
-
-    logger.info(f"🚀 Bridge active on Port 443. MQTT: {MQTT_BROKER}:{MQTT_PORT}")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        httpd.server_close()
+    def log_message(self, format, *args): return
 
 if __name__ == "__main__":
-    start_proxy()
+    if not os.path.exists(CERT_FILE):
+        logger.critical("Certificate missing!")
+        sys.exit(1)
+    
+    mqtt_bridge.start()
+    server = http.server.HTTPServer(('', 443), BresserProxy)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(CERT_FILE)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    
+    logger.info("🚀 Bresser Bridge v0.1 ready and listening...")
+    server.serve_forever()
