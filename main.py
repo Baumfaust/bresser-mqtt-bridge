@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Bresser-Local-Bridge v0.1
-Transparent HTTPS Proxy with Persistent MQTT and HA Auto-Discovery.
+Professional transparent proxy for Bresser 7-in-1 stations (Model 7003220).
+Features: Persistent MQTT, HA Auto-Discovery, and Extended Sensor Mapping.
 """
 
 import http.server
 import ssl
 import urllib.parse
 import json
-import threading
 import logging
 import os
 import sys
@@ -26,7 +26,12 @@ DISCOVERY_PREFIX = os.getenv('DISCOVERY_PREFIX', 'homeassistant')
 REAL_SERVER_URL = "https://api.proweatherlive.net"
 CERT_FILE = "/app/certs/server.pem"
 
-logging.basicConfig(level=getattr(logging, LOG_LEVEL), format='%(asctime)s [%(levelname)s] %(message)s')
+# --- LOGGING SETUP ---
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger("WeatherBridge")
 
 # --- PERSISTENT MQTT CLIENT ---
@@ -53,7 +58,8 @@ class WeatherMQTTClient:
         logger.warning("⚠️ MQTT: Disconnected. Trying to reconnect...")
 
     def start(self):
-        self.client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
+        # Shortened keepalive (15s) to detect background drops faster
+        self.client.connect_async(MQTT_BROKER, MQTT_PORT, 15)
         self.client.loop_start()
 
     def publish(self, data):
@@ -67,13 +73,21 @@ mqtt_bridge = WeatherMQTTClient()
 
 # --- AUTO DISCOVERY ---
 def send_discovery(client):
+    """Register all 7-in-1 sensors in Home Assistant."""
     sensors = [
         {"id": "indoor_temp", "name": "Indoor Temperature", "unit": "°C", "class": "temperature"},
         {"id": "indoor_humidity", "name": "Indoor Humidity", "unit": "%", "class": "humidity"},
         {"id": "outdoor_temp", "name": "Outdoor Temperature", "unit": "°C", "class": "temperature"},
         {"id": "outdoor_humidity", "name": "Outdoor Humidity", "unit": "%", "class": "humidity"},
-        {"id": "pressure_rel", "name": "Pressure", "unit": "hPa", "class": "pressure"},
+        {"id": "pressure_rel", "name": "Pressure (Rel)", "unit": "hPa", "class": "pressure"},
+        {"id": "pressure_abs", "name": "Pressure (Abs)", "unit": "hPa", "class": "pressure"},
         {"id": "wind_speed", "name": "Wind Speed", "unit": "m/s", "class": "wind_speed"},
+        {"id": "wind_direction", "name": "Wind Direction", "unit": "°", "class": None},
+        {"id": "wind_gust", "name": "Wind Gust", "unit": "m/s", "class": "wind_speed"},
+        {"id": "rain_rate", "name": "Rain Rate", "unit": "mm/h", "class": "precipitation_intensity"},
+        {"id": "rain_daily", "name": "Rain Daily", "unit": "mm", "class": "precipitation"},
+        {"id": "uv_index", "name": "UV Index", "unit": None, "class": None},
+        {"id": "solar_radiation", "name": "Solar Radiation", "unit": "W/m²", "class": "illuminance"},
         {"id": "battery_ok", "name": "Battery Status", "unit": None, "class": "battery"}
     ]
     
@@ -88,37 +102,59 @@ def send_discovery(client):
                 "identifiers": ["bresser_weather_station"],
                 "name": "Bresser Weather Station",
                 "manufacturer": "Bresser",
-                "model": "7-in-1 Station"
+                "model": "7-in-1 Station (7003220)"
             }
         }
         if s['unit']: payload["unit_of_measurement"] = s['unit']
         if s['class']: payload["device_class"] = s['class']
+        
         client.publish(config_topic, json.dumps(payload), retain=True)
+    logger.info("📡 HA Discovery: Sensors registered")
 
 # --- PROXY HANDLER ---
 class BresserProxy(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # Parse incoming station data
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         data = self._parse(query)
+        
         if data:
-            logger.info(f"Captured data for station: {data.get('station_id')}")
+            logger.info(f"Captured data for Station {data.get('station_id')}")
             mqtt_bridge.publish(data)
+            
+        # Relay to the official ProWeatherLive server
         self._relay()
 
     def _parse(self, params):
+        """Map Bresser query parameters to readable sensor names."""
         mapping = {
-            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 'relbi': 'pressure_rel',
-            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 'wind': 'wind_speed',
-            'tp1bt': 'battery_ok', 'wsid': 'station_id'
+            # Indoor Console
+            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 
+            'relbi': 'pressure_rel', 'absbi': 'pressure_abs',
+            
+            # Outdoor 7-in-1 (Type 1)
+            'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity', 
+            'tp1wdir': 'wind_direction', 'tp1wsp': 'wind_speed', 
+            'tp1wgu': 'wind_gust', 'tp1rinrte': 'rain_rate', 
+            'tp1rindaly': 'rain_daily', 'tp1uvi': 'uv_index', 
+            'tp1sod': 'solar_radiation', 'tp1bt': 'battery_ok',
+            
+            # System
+            'wsid': 'station_id'
         }
         res = {}
-        for b, r in mapping.items():
-            if b in params:
-                try: res[r] = float(params[b][0]) if '.' in params[b][0] else int(params[b][0])
-                except: res[r] = params[b][0]
+        for b_key, r_key in mapping.items():
+            if b_key in params:
+                try: 
+                    val = params[b_key][0]
+                    res[r_key] = float(val) if '.' in val else int(val)
+                except (ValueError, IndexError):
+                    res[r_key] = params[b_key][0]
+        
         return res if 'station_id' in res else None
 
     def _relay(self):
+        """Transparently forward the request to the real server to keep cloud features working."""
         try:
             r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
             self.send_response(r.status_code)
@@ -137,14 +173,21 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     if not os.path.exists(CERT_FILE):
-        logger.critical("Certificate missing!")
+        logger.critical(f"Certificate missing at {CERT_FILE}!")
         sys.exit(1)
     
     mqtt_bridge.start()
+    
     server = http.server.HTTPServer(('', 443), BresserProxy)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Support older station TLS handshake if necessary
+    ctx.set_ciphers('DEFAULT@SECLEVEL=1') 
     ctx.load_cert_chain(CERT_FILE)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     
-    logger.info("🚀 Bresser Bridge v0.1 ready and listening...")
-    server.serve_forever()
+    logger.info("🚀 Bresser Bridge v0.1: Listening for 7-in-1 data...")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+        server.server_close()
