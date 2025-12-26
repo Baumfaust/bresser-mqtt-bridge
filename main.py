@@ -185,7 +185,7 @@ if __name__ == "__main__":
     ctx.load_cert_chain(CERT_FILE)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     
-    logger.info("🚀 Bresser Bridge v0.1: Listening for 7-in-1 data...")
+    logger.info("🚀 Bresser Bridge v0.1: Listening for data...")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

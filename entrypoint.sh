@@ -1,5 +1,5 @@
 #!/bin/bash
-# Entrypoint for Bresser MQTT Bridge v0.1
+# Entrypoint for Bresser MQTT Bridge 
 
 echo "🚀 Starting Bresser-Local-Bridge v0.1..."
 
@@ -18,36 +18,33 @@ echo "🌐 IP Forwarding enabled."
 # 3. Cleanup Function
 cleanup() {
     echo "🛑 Stopping Bridge and cleaning up network..."
-    # Kill the ARP loop and arpspoof
-    pkill -P $$ 
+    pkill -f arpspoof
     iptables -t nat -D PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443 2>/dev/null
+    iptables -D FORWARD -i "$INTERFACE" -j ACCEPT 2>/dev/null
     echo "✅ Network rules restored. Goodbye!"
     exit 0
 }
 
 trap cleanup SIGINT SIGTERM
 
-# 4. Aggressive ARP Spoofing Loop
+# 4. Aggressive Bi-Directional ARP Spoofing
 if [ "$ENABLE_ARP" == "true" ]; then
-    echo "😈 Starting Aggressive ARP Spoofing on $INTERFACE..."
-    # Run in a background loop to prevent the router from reclaiming the station
-    (
-        while true; do
-            arpspoof -i "$INTERFACE" -t "$TARGET_IP" "$ROUTER_IP" > /dev/null 2>&1 &
-            SPOOF_PID=$!
-            sleep 10 # Restart arpspoof every 10 seconds to stay fresh
-            kill $SPOOF_PID > /dev/null 2>&1
-        done
-    ) &
-    echo "   ARP Heartbeat active (updates every 10s)"
+    echo "😈 Starting Bi-Directional ARP Spoofing on $INTERFACE..."
+    # We run two continuous processes. 
+    # -r tells arpspoof to be even more persistent in some versions
+    arpspoof -i "$INTERFACE" -t "$TARGET_IP" "$ROUTER_IP" > /dev/null 2>&1 &
+    arpspoof -i "$INTERFACE" -t "$ROUTER_IP" "$TARGET_IP" > /dev/null 2>&1 &
+    echo "   ARP Heartbeat active."
 fi
 
-# 5. IPTables Redirection
+# 5. IPTables Redirection & Forwarding
 iptables -t nat -D PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443 2>/dev/null
 iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443
-echo "🔀 IPTables redirection (443 -> 443 local) active."
+iptables -A FORWARD -i "$INTERFACE" -j ACCEPT
+echo "🔀 IPTables redirection & forwarding active."
 
 # 6. Start Python Bridge
+echo "🐍 Starting Python Bridge Service..."
 python3 -u main.py &
 PY_PID=$!
 echo "🐍 Python Bridge running (PID: $PY_PID)"
