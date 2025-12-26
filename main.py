@@ -16,6 +16,7 @@ import requests
 import paho.mqtt.client as mqtt
 
 # --- CONFIGURATION ---
+APP_VERSION = os.getenv('APP_VERSION', 'dev')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 MQTT_BROKER = os.getenv('MQTT_BROKER', '192.168.178.2')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
@@ -101,6 +102,7 @@ def send_discovery(client):
             "device": {
                 "identifiers": ["bresser_weather_station"],
                 "name": "Bresser Weather Station",
+                "mqtt_bridge_sw_version": APP_VERSION,
                 "manufacturer": "Bresser",
                 "model": "7-in-1 Station (7003220)"
             }
@@ -185,7 +187,7 @@ if __name__ == "__main__":
     ctx.load_cert_chain(CERT_FILE)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     
-    logger.info("🚀 Bresser Bridge v0.1: Listening for data...")
+    logger.info(f"🚀 Bresser Bridge v{APP_VERSION}: Listening for data...")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

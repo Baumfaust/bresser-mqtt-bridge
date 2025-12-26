@@ -1,7 +1,8 @@
 #!/bin/bash
-# Entrypoint for Bresser MQTT Bridge 
+# Use the version from env, fallback to 'unknown'
+VERSION=${APP_VERSION:-unknown}
 
-echo "🚀 Starting Bresser-Local-Bridge ..."
+echo "🚀 Starting Bresser-Local-Bridge v${VERSION}..."
 
 # 1. SSL Certificate Handling
 CERT_FILE="/app/certs/server.pem"
