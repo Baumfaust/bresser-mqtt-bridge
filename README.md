@@ -5,8 +5,8 @@ A professional-grade local bridge for Bresser/CCL weather stations. This project
 
 ## 🚀 Features
 
-- **100% Local Datc**: No cloud dependency for your automation 🏠.
-- **HA Auto-Discovery**: Sensors appear automatically in Home Assistant with correct units and device classes 🤖.
+- **100% Local Data**: No cloud dependency for your automation 🏠.
+- **Homeassistant Auto-Discovery**: Sensors appear automatically in Home Assistant with correct units and device classes 🤖.
 - **Transparent Proxy**: Maintains console functionality (forecasts/icons) by relaying traffic to the original servers 🔄.
 - **Persistent MQTT**: High-performance connection handling with automatic reconnection logic .
 - **Dockerized**: Easy deployment on any Linux-based system (Arch, Debian, Raspberry Pi) 🐳.
