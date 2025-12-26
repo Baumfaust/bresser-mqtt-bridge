@@ -1,6 +1,6 @@
 # Bresser Weather Station MQTT Bridge (v0.2) 🌦️🛰️
 
-A professional-grade local bridge for Bresser/CCL weather stations. This project intercepts HTTPS traffic from your station and forwards it to Home Assistant via MQTT, keeping your data local while maintaining cloud functionality for the console's forecast.
+A local bridge for Bresser/CCL weather stations. This project intercepts HTTPS traffic from your station and forwards it to Home Assistant via MQTT, keeping your data local while maintaining cloud functionality for the console's forecast.
 
 ## 📡 Compatibility & Hardware
 This bridge was developed and successfully tested with the following hardware:
