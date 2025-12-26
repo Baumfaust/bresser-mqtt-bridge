@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bresser-Local-Bridge
-A professional transparent proxy for Bresser/CCL Weather Stations.
+A professional transparent proxy with Home Assistant Auto-Discovery.
 """
 
 import http.server
@@ -20,11 +20,13 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 MQTT_BROKER = os.getenv('MQTT_BROKER', '192.168.178.50')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
 MQTT_TOPIC = os.getenv('MQTT_TOPIC', 'home/weather/bresser')
+MQTT_USER = os.getenv('MQTT_USER', None)
+MQTT_PASS = os.getenv('MQTT_PASS', None)
+DISCOVERY_PREFIX = os.getenv('DISCOVERY_PREFIX', 'homeassistant')
 REAL_SERVER_URL = "https://api.proweatherlive.net"
 CERT_FILE = os.getenv('CERT_FILE', 'server.pem')
 
 # --- LOGGING SETUP ---
-# Configure logging based on the environment variable
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -33,11 +35,6 @@ logging.basicConfig(
 logger = logging.getLogger("WeatherBridge")
 
 class BresserTransparentProxy(http.server.BaseHTTPRequestHandler):
-    """
-    HTTP Handler that intercepts weather data and forwards it to the 
-    original server to maintain console functionality (forecasts).
-    """
-
     def do_GET(self):
         self._process_request()
 
@@ -45,44 +42,32 @@ class BresserTransparentProxy(http.server.BaseHTTPRequestHandler):
         self._process_request()
 
     def _process_request(self):
-        # 1. Capture local data
-        logger.debug(f"Incoming request: {self.path}")
         query_params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         extracted_data = self._parse_bresser_data(query_params)
 
         if extracted_data:
             logger.info(f"Captured data for Station {extracted_data.get('station_id', 'Unknown')}")
-            logger.debug(f"Full Data Payload: {json.dumps(extracted_data)}")
-            # Dispatch MQTT publishing to a separate thread
             threading.Thread(target=publish_to_mqtt, args=(extracted_data,), daemon=True).start()
 
-        # 2. Transparent Relay to keep the weather forecast alive on the station
         self._forward_to_cloud()
 
     def _forward_to_cloud(self):
-        """Relays the request to the real ProWeatherLive server."""
         target_url = f"{REAL_SERVER_URL}{self.path}"
         try:
-            logger.debug(f"Relaying request to cloud: {target_url}")
             response = requests.get(target_url, timeout=10)
-            
             self.send_response(response.status_code)
-            # Forward relevant headers back to the station
             for key, value in response.headers.items():
                 if key.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
                     self.send_header(key, value)
             self.end_headers()
             self.wfile.write(response.content)
-            logger.debug("Cloud response relayed successfully.")
         except Exception as e:
             logger.error(f"Failed to relay to ProWeatherLive: {e}")
-            # Even if relay fails, send a generic success to stop the station from retrying infinitely
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"success")
 
     def _parse_bresser_data(self, params):
-        """Maps Bresser keys to readable names."""
         mapping = {
             'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 'relbi': 'pressure_rel',
             'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 'wind': 'wind_speed',
@@ -100,48 +85,81 @@ class BresserTransparentProxy(http.server.BaseHTTPRequestHandler):
                     data[r_key] = val
         return data
 
-    def log_message(self, format, *args):
-        """Silence the default BaseHTTPRequestHandler logging to use our own."""
-        return
+    def log_message(self, format, *args): return
+
+def send_discovery():
+    """Sends MQTT Discovery payloads so HA creates sensors automatically."""
+    sensors = [
+        {"id": "indoor_temp", "name": "Indoor Temperature", "unit": "°C", "class": "temperature"},
+        {"id": "indoor_humidity", "name": "Indoor Humidity", "unit": "%", "class": "humidity"},
+        {"id": "outdoor_temp", "name": "Outdoor Temperature", "unit": "°C", "class": "temperature"},
+        {"id": "outdoor_humidity", "name": "Outdoor Humidity", "unit": "%", "class": "humidity"},
+        {"id": "pressure_rel", "name": "Pressure", "unit": "hPa", "class": "pressure"},
+        {"id": "wind_speed", "name": "Wind Speed", "unit": "m/s", "class": "wind_speed"},
+        {"id": "battery_ok", "name": "Battery Status", "unit": None, "class": "battery"}
+    ]
+    
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        if MQTT_USER and MQTT_PASS: client.username_pw_set(MQTT_USER, MQTT_PASS)
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+
+        for s in sensors:
+            config_topic = f"{DISCOVERY_PREFIX}/sensor/bresser_{s['id']}/config"
+            payload = {
+                "name": f"Bresser {s['name']}",
+                "state_topic": MQTT_TOPIC,
+                "value_template": f"{{{{ value_json.{s['id']} }}}}",
+                "unique_id": f"bresser_ws_{s['id']}",
+                "device": {
+                    "identifiers": ["bresser_weather_station"],
+                    "name": "Bresser Weather Station",
+                    "model": "7-in-1 Station",
+                    "manufacturer": "Bresser"
+                }
+            }
+            if s['unit']: payload["unit_of_measurement"] = s['unit']
+            if s['class']: payload["device_class"] = s['class']
+            
+            client.publish(config_topic, json.dumps(payload), retain=True)
+        
+        client.disconnect()
+        logger.info("📡 Home Assistant Discovery payloads sent.")
+    except Exception as e:
+        logger.error(f"Discovery failed: {e}")
 
 def publish_to_mqtt(data):
-    """Sends the extracted JSON data to the MQTT broker."""
     try:
-        # Using a local client instance for thread safety in simple scripts
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        if MQTT_USER and MQTT_PASS: client.username_pw_set(MQTT_USER, MQTT_PASS)
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.publish(f"{MQTT_TOPIC}/state", json.dumps(data))
+        client.publish(MQTT_TOPIC, json.dumps(data))
         client.disconnect()
-        logger.debug("Data published to MQTT.")
+        logger.debug(f"Data published to MQTT: {MQTT_TOPIC}")
     except Exception as e:
         logger.error(f"MQTT Publish failed: {e}")
 
 def start_proxy():
     if not os.path.exists(CERT_FILE):
-        logger.critical(f"Certificate file {CERT_FILE} not found. Shutdown.")
+        logger.critical(f"Certificate file {CERT_FILE} not found.")
         sys.exit(1)
+
+    # Send discovery in a background thread at startup
+    threading.Thread(target=send_discovery, daemon=True).start()
 
     server_address = ('', 443)
     httpd = http.server.HTTPServer(server_address, BresserTransparentProxy)
-    
-    # SSL CONFIGURATION (Legacy Support for IoT)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1
-    try:
-        context.set_ciphers('DEFAULT:@SECLEVEL=0')
-    except:
-        context.set_ciphers('ALL:!aNULL:!eNULL')
-    
+    try: context.set_ciphers('DEFAULT:@SECLEVEL=0')
+    except: context.set_ciphers('ALL:!aNULL:!eNULL')
     context.load_cert_chain(certfile=CERT_FILE)
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
-    
-    logger.info(f"🚀 Bridge active. Port: 443 | LogLevel: {LOG_LEVEL}")
-    logger.info(f"📡 Forwarding to MQTT Broker: {MQTT_BROKER}")
-    
+
+    logger.info(f"🚀 Bridge active on Port 443. MQTT: {MQTT_BROKER}:{MQTT_PORT}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        logger.info("Server stopping...")
         httpd.server_close()
 
 if __name__ == "__main__":

@@ -1,17 +1,19 @@
 services:
   bresser-bridge:
-    build: .
-    container_name: bresser_bridge
+    image: bresser-mqtt-bridge:latest
+    container_name: bresser_mqtt_bridge
     restart: unless-stopped
     network_mode: host
     privileged: true
     environment:
       - LOG_LEVEL=INFO
-      - MQTT_BROKER=IP
+      - MQTT_BROKER=192.168.178.2
       - MQTT_TOPIC=bresser
+      - MQTT_USER=bresser
+      - MQTT_PASS=123456789
       - ENABLE_ARP=true
-      - TARGET_IP=IÜ
-      - ROUTER_IP=IP
-      - INTERFACE=eth0
+      - TARGET_IP=192.168.178.110
+      - ROUTER_IP=192.168.178.1
+      - INTERFACE=enp1s0
     volumes:
       - ./certs:/app/certs
