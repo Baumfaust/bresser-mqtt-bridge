@@ -19,6 +19,22 @@ This bridge utilizes several networking techniques to "liberate" your weather da
 2. **SSL Interception**: A Python-based proxy uses a self-signed certificate to decrypt the station's data (exploiting the lack of certificate validation in IoT firmware).
 3. **MQTT Bridge**: Extracted sensor data is published as a JSON payload to your MQTT broker.
 
+## 🔐 Security & Secrets
+To keep your credentials (like MQTT passwords) safe and prevent them from being accidentally pushed to GitHub, this project uses a .env file.
+
+1. Create a `.env` file in the root directory:
+```Bash
+MQTT_PASS=your_secure_password
+```
+In your docker-compose.yml, the password is referenced like this:
+
+```YAML
+
+environment:
+  - MQTT_PASS=${MQTT_PASS}
+```
+Note: The `.gitignore` file is already configured to exclude `.env` and the certs/ folder from being tracked by Git.
+
 ## 📦 Installation & Setup
 
 ### 1. Prerequisites
