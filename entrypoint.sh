@@ -1,7 +1,7 @@
 #!/bin/bash
 # Entrypoint for Bresser MQTT Bridge 
 
-echo "🚀 Starting Bresser-Local-Bridge v0.1..."
+echo "🚀 Starting Bresser-Local-Bridge ..."
 
 # 1. SSL Certificate Handling
 CERT_FILE="/app/certs/server.pem"
@@ -13,45 +13,33 @@ fi
 
 # 2. Network Preparation
 echo "1" > /proc/sys/net/ipv4/ip_forward
-echo "🌐 IP Forwarding enabled."
+# Lösche alte Regeln, um Duplikate zu vermeiden
+iptables -t nat -F PREROUTING
+iptables -F FORWARD
+
+# Die Umleitung: Alles was für Port 443 (HTTPS) reinkommt, muss an unseren Python-Prozess
+iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443
+# Erlaube das Forwarding für den Rückweg der Cloud-Daten
+iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i "$INTERFACE" -j ACCEPT
+
+echo "🌐 Network Routing & IPTables configured."
 
 # 3. Cleanup Function
 cleanup() {
-    echo "🛑 Stopping Bridge and cleaning up network..."
-    pkill -f arpspoof
-    iptables -t nat -D PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443 2>/dev/null
-    iptables -D FORWARD -i "$INTERFACE" -j ACCEPT 2>/dev/null
-    echo "✅ Network rules restored. Goodbye!"
+    echo "🛑 Cleaning up network..."
+    pkill arpspoof
+    iptables -t nat -F PREROUTING
+    echo "✅ Rules flushed. Exit."
     exit 0
 }
-
 trap cleanup SIGINT SIGTERM
 
-# 4. Aggressive Bi-Directional ARP Spoofing
-if [ "$ENABLE_ARP" == "true" ]; then
-    echo "😈 Starting Bi-Directional ARP Spoofing on $INTERFACE..."
-    # We run two continuous processes. 
-    # -r tells arpspoof to be even more persistent in some versions
-    arpspoof -i "$INTERFACE" -t "$TARGET_IP" "$ROUTER_IP" > /dev/null 2>&1 &
-    arpspoof -i "$INTERFACE" -t "$ROUTER_IP" "$TARGET_IP" > /dev/null 2>&1 &
-    echo "   ARP Heartbeat active."
-fi
+# 4. Unidirektionales ARP-Spoofing (Nur Station besprechen)
+# Wir sagen der STATION, dass wir der ROUTER sind.
+echo "😈 Spoofing Target: $TARGET_IP thinking we are $ROUTER_IP"
+arpspoof -i "$INTERFACE" -t "$TARGET_IP" "$ROUTER_IP" > /dev/null 2>&1 &
 
-# 5. IPTables Redirection & Forwarding
-iptables -t nat -D PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443 2>/dev/null
-iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 443
-iptables -A FORWARD -i "$INTERFACE" -j ACCEPT
-echo "🔀 IPTables redirection & forwarding active."
-
-# 6. Start Python Bridge
-echo "🐍 Starting Python Bridge Service..."
-python3 -u main.py &
-PY_PID=$!
-echo "🐍 Python Bridge running (PID: $PY_PID)"
-
-# Wait for the Python process to finish or for a signal (SIGTERM/SIGINT)
-# The 'wait' command will be interrupted by the trap
-wait $PY_PID
-
-# Execute cleanup explicitly if Python exits by itself
-cleanup
+# 5. Start Python Bridge im Vordergrund
+echo "🐍 Starting Python Bridge..."
+python3 -u main.py
