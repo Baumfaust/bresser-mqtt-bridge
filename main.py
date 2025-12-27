@@ -65,8 +65,9 @@ class WeatherMQTTClient:
 
     def publish(self, data):
         if self.is_connected:
-            self.client.publish(MQTT_TOPIC, json.dumps(data), qos=1)
-            logger.debug("MQTT: Data published")
+            json_data = json.dumps(data)
+            self.client.publish(MQTT_TOPIC, json_data, qos=1)
+            logger.debug("MQTT: Data published {json_data}")
         else:
             logger.warning("MQTT: Client not connected, data dropped")
 
@@ -110,7 +111,9 @@ def send_discovery(client):
         if s['unit']: payload["unit_of_measurement"] = s['unit']
         if s['class']: payload["device_class"] = s['class']
         
-        client.publish(config_topic, json.dumps(payload), retain=True)
+        json_payload = json.dumps(payload)
+        client.publish(config_topic, json_payload, retain=True)
+        logger.debug(f"MQTT Discovery: Published topic: {config_topic} payload: {json_payload} ")
     logger.info("📡 HA Discovery: Sensors registered")
 
 # --- PROXY HANDLER ---
