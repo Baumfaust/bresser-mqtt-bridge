@@ -89,7 +89,7 @@ def send_discovery(client):
         {"id": "rain_rate", "name": "Rain Rate", "unit": "mm/h", "class": "precipitation_intensity"},
         {"id": "rain_daily", "name": "Rain Daily", "unit": "mm", "class": "precipitation"},
         {"id": "uv_index", "name": "UV Index", "unit": None, "class": None},
-        {"id": "solar_radiation", "name": "Solar Radiation", "unit": "W/m²", "class": "illuminance"},
+        {"id": "irradiance", "name": "Irradiance", "unit": "W/m²", "class": "irradiance"},
         {"id": "battery_ok", "name": "Battery Status", "unit": None, "class": "battery"}
     ]
 
@@ -100,6 +100,7 @@ def send_discovery(client):
             "state_topic": MQTT_TOPIC,
             "value_template": f"{{{{ value_json.{s['id']} }}}}",
             "unique_id": f"bresser_weather_station_{s['id']}",
+            "state_class": "measurement",
             "device": {
                 "identifiers": ["bresser_weather_station_7003220"],
                 "name": "Bresser Weather Station",
@@ -134,18 +135,29 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         """Map Bresser query parameters to readable sensor names."""
         # Note: Bresser often sends 'temp' instead of 'tp1tm' depending on firmware
         mapping = {
-            'tmi': 'indoor_temp', 'hui': 'indoor_humidity',
-            'relbi': 'pressure_rel', 'absbi': 'pressure_abs',
-            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity',
-            'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity',
-            'tp1wdir': 'wind_direction', 'wdir': 'wind_direction',
-            'tp1wsp': 'wind_speed', 'wind': 'wind_speed',
-            'tp1wgu': 'wind_gust', 'gust': 'wind_gust',
-            'tp1rinrte': 'rain_rate', 'rain': 'rain_rate',
-            'tp1rindaly': 'rain_daily', 'dailyrain': 'rain_daily',
-            'tp1uvi': 'uv_index', 'uv': 'uv_index',
-            'tp1sod': 'solar_radiation', 'solarradiation': 'solar_radiation',
-            'tp1bt': 'battery_ok', 'wsid': 'station_id'
+            'tmi': 'indoor_temp',
+            'hui': 'indoor_humidity',
+            'relbi': 'pressure_rel',
+            'absbi': 'pressure_abs',
+            'temp': 'outdoor_temp', 
+            'hum': 'outdoor_humidity',
+            'tp1tm': 'outdoor_temp', 
+            'tp1hu': 'outdoor_humidity',
+            'tp1wdir': 'wind_direction', 
+            'wdir': 'wind_direction',
+            'tp1wsp': 'wind_speed', 
+            'wind': 'wind_speed',
+            'tp1wgu': 'wind_gust', 
+            'gust': 'wind_gust',
+            'tp1rinrte': 'rain_rate',
+            'rain': 'rain_rate',
+            'tp1rindaly': 'rain_daily', 
+            'dailyrain': 'rain_daily',
+            'tp1uvi': 'uv_index', 
+            'uv': 'uv_index',
+            'tp1sod': 'irradiance', 
+            'tp1bt': 'battery_ok', 
+            'wsid': 'station_id'
         }
         res = {}
         for b_key, r_key in mapping.items():
