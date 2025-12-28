@@ -41,7 +41,7 @@ class WeatherMQTTClient:
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if MQTT_USER and MQTT_PASS:
             self.client.username_pw_set(MQTT_USER, MQTT_PASS)
-        
+
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.is_connected = False
@@ -67,7 +67,7 @@ class WeatherMQTTClient:
         if self.is_connected:
             json_data = json.dumps(data)
             self.client.publish(MQTT_TOPIC, json_data, qos=1)
-            logger.debug("MQTT: Data published {json_data}")
+            logger.debug(f"MQTT: Data published {json_data}")
         else:
             logger.warning("MQTT: Client not connected, data dropped")
 
@@ -92,25 +92,25 @@ def send_discovery(client):
         {"id": "solar_radiation", "name": "Solar Radiation", "unit": "W/m²", "class": "illuminance"},
         {"id": "battery_ok", "name": "Battery Status", "unit": None, "class": "battery"}
     ]
-    
+
     for s in sensors:
         config_topic = f"{DISCOVERY_PREFIX}/sensor/bresser_{s['id']}/config"
         payload = {
-            "name": f"Bresser {s['name']}",
+            "name": f"{s['name']}",
             "state_topic": MQTT_TOPIC,
             "value_template": f"{{{{ value_json.{s['id']} }}}}",
-            "unique_id": f"bresser_ws_{s['id']}",
+            "unique_id": f"bresser_weather_station_{s['id']}",
             "device": {
-                "identifiers": ["bresser_weather_station"],
+                "identifiers": ["bresser_weather_station_7003220"],
                 "name": "Bresser Weather Station",
-                "mqtt_bridge_sw_version": APP_VERSION,
+                "sw_version": APP_VERSION,
                 "manufacturer": "Bresser",
-                "model": "7-in-1 Station (7003220)"
+                "model": "7-in-1 Station 1(7003220)"
             }
         }
         if s['unit']: payload["unit_of_measurement"] = s['unit']
         if s['class']: payload["device_class"] = s['class']
-        
+
         json_payload = json.dumps(payload)
         client.publish(config_topic, json_payload, retain=True)
         logger.debug(f"MQTT Discovery: Published topic: {config_topic} payload: {json_payload} ")
@@ -122,11 +122,11 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         # Parse incoming station data
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         data = self._parse(query)
-        
+
         if data:
             logger.info(f"Captured data for Station {data.get('station_id')}")
             mqtt_bridge.publish(data)
-            
+
         # Relay to the official ProWeatherLive server
         self._relay()
 
@@ -136,7 +136,7 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         mapping = {
             'tmi': 'indoor_temp', 'hui': 'indoor_humidity',
             'relbi': 'pressure_rel', 'absbi': 'pressure_abs',
-            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity', 
+            'temp': 'outdoor_temp', 'hum': 'outdoor_humidity',
             'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity',
             'tp1wdir': 'wind_direction', 'wdir': 'wind_direction',
             'tp1wsp': 'wind_speed', 'wind': 'wind_speed',
@@ -155,7 +155,7 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
                     res[r_key] = float(val) if '.' in val else int(val)
                 except (ValueError, IndexError):
                     res[r_key] = params[b_key][0]
-        
+
         return res if 'station_id' in res else None
 
     def _relay(self):
@@ -180,16 +180,16 @@ if __name__ == "__main__":
     if not os.path.exists(CERT_FILE):
         logger.critical(f"Certificate missing at {CERT_FILE}!")
         sys.exit(1)
-    
+
     mqtt_bridge.start()
-    
+
     server = http.server.HTTPServer(('', 443), BresserProxy)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     # Support older station TLS handshake if necessary
-    ctx.set_ciphers('DEFAULT@SECLEVEL=1') 
+    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
     ctx.load_cert_chain(CERT_FILE)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
-    
+
     logger.info(f"🚀 Bresser Bridge v{APP_VERSION}: Listening for data...")
     try:
         server.serve_forever()

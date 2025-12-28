@@ -4,20 +4,13 @@ services:
     container_name: bresser_mqtt_bridge
     restart: unless-stopped
     network_mode: host
-    privileged: true
-    stop_signal: SIGTERM
-    stop_grace_period: 10s
     environment:
       - APP_VERSION=0.3.1
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
       - MQTT_BROKER=192.168.178.2
       - MQTT_PORT=1883
-      - MQTT_TOPIC=bresser
       - MQTT_USER=bresser
       - MQTT_PASS=${MQTT_PASS}
-      - ENABLE_ARP=true
-      - TARGET_IP=192.168.178.110
-      - ROUTER_IP=192.168.178.1
-      - INTERFACE=enp1s0
+      - ENABLE_ARP=false
     volumes:
       - ./certs:/app/certs
