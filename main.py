@@ -100,7 +100,6 @@ def send_discovery(client):
             "state_topic": MQTT_TOPIC,
             "value_template": f"{{{{ value_json.{s['id']} }}}}",
             "unique_id": f"bresser_weather_station_{s['id']}",
-            "state_class": "measurement",
             "device": {
                 "identifiers": ["bresser_weather_station_7003220"],
                 "name": "Bresser Weather Station",
