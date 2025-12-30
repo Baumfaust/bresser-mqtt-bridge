@@ -177,29 +177,18 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
     def _relay(self):
         """Transparently forward the request to the real server to keep cloud features working."""
         try:
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
-            logger.debug(f"Relay Response Status: {r.status_code}")
-            logger.debug(f"Relay Response Body: {r.content}")            
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=5)
             self.send_response(r.status_code)
-            
-            for key, value in r.headers.items():
-                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
-                    self.send_header(key, value)
-            
-            self.send_header('Content-Length', str(len(r.content)))
+            for k, v in r.headers.items():
+                if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
+                    self.send_header(k, v)
             self.end_headers()
             self.wfile.write(r.content)
         except Exception as e:
             logger.error(f"Relay error (Cloud unreachable?): {e}")
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"OK")
-
-        except Exception as e:
-            logger.error(f"Relay failed: {e}")
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
+            self.wfile.write(b"success")
 
     def _send_ha_alert(self, status):
         """
