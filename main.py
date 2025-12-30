@@ -175,20 +175,52 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
-        """Transparently forward the request to the real server to keep cloud features working."""
+        """
+        Transparent relay: Streams data directly from the server to the station
+        without any modifications to headers or body.
+        """
+        global last_get_time, retry_count
         try:
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=5)
-            self.send_response(r.status_code)
-            for k, v in r.headers.items():
-                if k.lower() not in ['content-encoding', 'transfer-encoding', 'content-length', 'connection']:
-                    self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(r.content)
+            current_time = time.time()
+            is_get_request = "/api/v01/get" in self.path
+
+            # Maintain our alarm logic
+            if is_get_request:
+                time_diff = current_time - last_get_time
+                if time_diff > 300: retry_count = 1
+                else: retry_count += 1
+                last_get_time = current_time
+                
+                if retry_count >= 3:
+                    self._send_ha_alert("Problem")
+                else:
+                    self._send_ha_alert("OK")
+
+            # 1. Open the connection to the real server as a stream
+            # We set stream=True to get access to the raw socket data
+            with requests.get(f"{REAL_SERVER_URL}{self.path}", stream=True, timeout=10) as r:
+                # 2. Send the original status code
+                self.send_response(r.status_code)
+                
+                # 3. Relay ALL original headers exactly as they came from the server
+                for header, value in r.headers.items():
+                    # We skip 'Transfer-Encoding' because Python's HTTPServer 
+                    # handles the chunking/sending logic internally
+                    if header.lower() not in ['transfer-encoding']:
+                        self.send_header(header, value)
+                self.end_headers()
+
+                # 4. Stream the raw content directly to the station
+                # 'shutil' is great for piping one stream into another
+                import shutil
+                shutil.copyfileobj(r.raw, self.wfile)
+
+            logger.info(f"Transparent relay finished for: {self.path}")
+
         except Exception as e:
-            logger.error(f"Relay error (Cloud unreachable?): {e}")
-            self.send_response(200)
+            logger.error(f"Transparent relay failed: {e}")
+            self.send_response(500)
             self.end_headers()
-            self.wfile.write(b"success")
 
     def _send_ha_alert(self, status):
         """
