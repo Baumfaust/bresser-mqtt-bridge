@@ -15,6 +15,8 @@ import os
 import sys
 import requests
 import paho.mqtt.client as mqtt
+import shutil
+
 
 # --- CONFIGURATION ---
 APP_VERSION = os.getenv('APP_VERSION', 'dev')
@@ -174,23 +176,49 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
         return res if 'station_id' in res else None
 
+
     def _relay(self):
-        """Transparently forward the request to the real server to keep cloud features working."""
+        """
+        Acts as a transparent pipe for GET (forecast) and 
+        intercepts SET (sensor data).
+        """
         try:
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
-            logger.debug(f"Relay Response Status: {r.status_code}")
-            logger.debug(f"Relay Response Body: {r.content}")            
-            self.send_response(r.status_code)
-            
-            for key, value in r.headers.items():
-                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
-                    self.send_header(key, value)
-            
-            self.send_header('Content-Length', str(len(r.content)))
-            self.end_headers()
-            self.wfile.write(r.content)
+            # 1. HANDLING FORECAST (GET)
+            if "/api/v01/get" in self.path:
+                logger.info(f"Piping GET request to PWL: {self.path}")
+                
+                # We fetch the original response from the real server
+                # using stream=True to avoid loading everything into memory at once
+                with requests.get(f"{REAL_SERVER_URL}{self.path}", stream=True, timeout=10) as r:
+                    self.send_response(r.status_code)
+                    
+                    # Relay original headers from PWL
+                    for header, value in r.headers.items():
+                        if header.lower() not in ['transfer-encoding', 'content-encoding']:
+                            self.send_header(header, value)
+                    
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    
+                    # Copy the raw response body directly to the station
+                    # This ensures the binary content remains 100% untouched
+                    shutil.copyfileobj(r.raw, self.wfile)
+                return
+
+            # 2. HANDLING SENSOR DATA (SET)
+            if "/api/v01/set" in self.path:
+                # We don't need to relay SET requests to get the weather working.
+                # We just acknowledge locally so your bridge can parse the data.
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Content-Length', '2')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(b"OK")
+                logger.info("Acknowledged sensor data locally.")
+
         except Exception as e:
-            logger.error(f"Relay error (Cloud unreachable?): {e}")
+            logger.error(f"Relay logic failed: {e}")
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
