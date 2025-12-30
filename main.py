@@ -181,8 +181,8 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
                 timeout=10,
                 headers={
                     "User-Agent": self.headers.get("User-Agent", ""),
-                    "Accept": self.headers.get("Accept", "*/*"),
-                    "Accept-Encoding": "identity"
+                    "Accept": "*/*",
+                    "Accept-Encoding": "identity",
                 },
                 stream=True
             )
@@ -193,24 +193,31 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
             for header, value in r.headers.items():
                 h = header.lower()
-                if h in ("transfer-encoding", "content-encoding", "connection"):
+                if h in (
+                    "transfer-encoding",
+                    "content-encoding",
+                    "content-length",
+                    "connection",
+                ):
                     continue
                 self.send_header(header, value)
 
-            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
 
             self.wfile.write(body)
             self.wfile.flush()
+            # WICHTIG: kein explizites close, Handler macht das selbst
 
             logger.info(
-                f"Relay OK: {self.path} Status={r.status_code} Bytes={len(body)}"
+                f"Relay OK (EOF-based): {self.path} "
+                f"Status={r.status_code} Bytes={len(body)}"
             )
 
         except Exception as e:
             logger.error(f"Relay failed: {e}")
             self.send_response(204)
             self.end_headers()
+
 
 
     def _send_ha_alert(self, status):
