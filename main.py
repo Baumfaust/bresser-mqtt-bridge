@@ -231,10 +231,9 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         Sends a status update to MQTT to notify Home Assistant about sync issues.
         """
         try:
-            topic = "bresser/bridge/sync_status"
             # status is either "Problem" or "OK"
-            mqtt_bridge.publish(topic, status, retain=True)
-            logger.info(f"MQTT Alert sent: {status} to {topic}")
+            mqtt_bridge.publish(status)
+            logger.info(f"MQTT Alert sent: {status}")
         except Exception as e:
             logger.error(f"Failed to send MQTT alert: {e}")
 
