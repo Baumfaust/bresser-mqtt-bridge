@@ -175,50 +175,25 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
+        """Transparently forward the request to the real server to keep cloud features working."""
         try:
-            r = requests.get(
-                f"{REAL_SERVER_URL}{self.path}",
-                timeout=10,
-                headers={
-                    "User-Agent": self.headers.get("User-Agent", ""),
-                    "Accept": "*/*",
-                    "Accept-Encoding": "identity",
-                },
-                stream=True
-            )
-
-            body = r.raw.read(decode_content=False)
-
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
+            logger.debug(f"Relay Response Status: {r.status_code}")
+            logger.debug(f"Relay Response Body: {r.content}")            
             self.send_response(r.status_code)
-
-            for header, value in r.headers.items():
-                h = header.lower()
-                if h in (
-                    "transfer-encoding",
-                    "content-encoding",
-                    "content-length",
-                    "connection",
-                ):
-                    continue
-                self.send_header(header, value)
-
+            
+            for key, value in r.headers.items():
+                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
+                    self.send_header(key, value)
+            
+            self.send_header('Content-Length', str(len(r.content)))
             self.end_headers()
-
-            self.wfile.write(body)
-            self.wfile.flush()
-            # WICHTIG: kein explizites close, Handler macht das selbst
-
-            logger.info(
-                f"Relay OK (EOF-based): {self.path} "
-                f"Status={r.status_code} Bytes={len(body)}"
-            )
-
+            self.wfile.write(r.content)
         except Exception as e:
-            logger.error(f"Relay failed: {e}")
-            self.send_response(204)
+            logger.error(f"Relay error (Cloud unreachable?): {e}")
+            self.send_response(200)
             self.end_headers()
-
-
+            self.wfile.write(b"OK")
 
     def _send_ha_alert(self, status):
         """
