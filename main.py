@@ -243,12 +243,27 @@ if __name__ == "__main__":
 
     mqtt_bridge.start()
 
+    # Create the server first
     server = http.server.HTTPServer(('', 443), BresserProxy)
+
+    # Create a more robust SSL Context
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    # Support older station TLS handshake if necessary
-    ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+
+    # FORCE TLS 1.2 or higher (prevents the "Downgrade" error in many stations)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    # Use a more professional Cipher-String
+    # This covers most modern IoT devices without being "too weak"
+    ctx.set_ciphers('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:AES128-GCM-SHA256')
+
     ctx.load_cert_chain(CERT_FILE)
-    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    # Wrap the socket
+    try:
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        logger.info("SSL/TLS Layer initialized (TLSv1.2+ forced)")
+    except Exception as e:
+        logger.error(f"Failed to wrap socket with SSL: {e}")
 
     logger.info(f"🚀 Bresser Bridge v{APP_VERSION}: Listening for data...")
     try:
