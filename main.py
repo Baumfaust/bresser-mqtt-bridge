@@ -176,53 +176,40 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _relay(self):
         try:
-            # Original-Request möglichst unverändert weiterleiten
             r = requests.get(
                 f"{REAL_SERVER_URL}{self.path}",
                 timeout=10,
                 headers={
                     "User-Agent": self.headers.get("User-Agent", ""),
                     "Accept": self.headers.get("Accept", "*/*"),
+                    "Accept-Encoding": "identity"
                 },
                 stream=True
             )
 
-            # Exakten Statuscode übernehmen
+            body = r.raw.read(decode_content=False)
+
             self.send_response(r.status_code)
 
-            # Header transparent durchreichen
             for header, value in r.headers.items():
                 h = header.lower()
-
-                # Diese Header dürfen NICHT weitergereicht werden
-                if h in (
-                    "transfer-encoding",   # chunked → killt die Firmware
-                    "content-encoding",    # gzip → Firmware kann das nicht
-                    "connection",          # wird von BaseHTTPRequestHandler gesetzt
-                ):
+                if h in ("transfer-encoding", "content-encoding", "connection"):
                     continue
-
                 self.send_header(header, value)
 
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
 
-            # Body 1:1 senden
-            if r.content:
-                self.wfile.write(r.content)
-
+            self.wfile.write(body)
             self.wfile.flush()
 
             logger.info(
-                f"Relay OK: {self.path} "
-                f"Status={r.status_code} "
-                f"Bytes={len(r.content)}"
+                f"Relay OK: {self.path} Status={r.status_code} Bytes={len(body)}"
             )
 
         except Exception as e:
-            logger.error(f"Relay failed hard: {e}")
-
-            # Fallback: exakt so, wie echte Server es bei Fehlern tun
-            self.send_response(204)  # No Content
+            logger.error(f"Relay failed: {e}")
+            self.send_response(204)
             self.end_headers()
 
 
