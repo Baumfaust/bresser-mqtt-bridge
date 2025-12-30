@@ -175,51 +175,43 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
-        """
-        Relays the request to the official ProWeatherLive server.
-        Logs the original headers and body for deep inspection.
-        """
         global last_get_time, retry_count
         try:
             current_time = time.time()
-            logger.info(f"Incoming station request: {self.path}")
+            is_get_request = "/api/v01/get" in self.path
 
-            # Monitor the 3-retry pattern
-            time_diff = current_time - last_get_time
-            if time_diff < 120:
-                retry_count += 1
+            # 1. Only track retries for FORECAST (get) requests
+            if is_get_request:
+                logger.info(f"FORECAST request detected: {self.path}")
+                time_diff = current_time - last_get_time
+                if time_diff < 120:
+                    retry_count += 1
+                else:
+                    retry_count = 1
+                last_get_time = current_time
+
+                if retry_count >= 3:
+                    logger.error("ALERT: Station rejected forecast 3 times!")
+                    self._send_ha_alert("Problem")
+                elif retry_count == 1:
+                    self._send_ha_alert("OK")
             else:
-                retry_count = 1
-            last_get_time = current_time
+                # Regular sensor data upload (set)
+                logger.info(f"Sensor data upload (set): {self.path}")
 
-            if retry_count >= 3:
-                logger.error("ALERT: Station rejected forecast 3 times!")
-                self._send_ha_alert("Problem")
-            elif retry_count == 1:
-                self._send_ha_alert("OK")
-
-            # 1. Get original response from real server
-            # We use stream=True to get the raw data
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
+            # 2. Fetch from real server
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
             
-            # 2. Log original headers for comparison
-            logger.info(f"Original PWL Headers: {dict(r.headers)}")
-
-            # 3. Use raw socket to send the response
-            # This prevents Python from adding its own headers
+            # 3. Clean and Send Response
+            # IMPORTANT: We add the 'Date' header so the station can sync its clock!
             self.wfile.write(f"HTTP/1.1 {r.status_code} OK\r\n".encode())
-            
-            # Relay only essential headers from the original response
-            for header in ['Content-Type', 'Content-Length', 'Connection']:
-                if header in r.headers:
-                    self.wfile.write(f"{header}: {r.headers[header]}\r\n".encode())
-            
+            self.wfile.write(b"Content-Type: text/plain; charset=utf-8\r\n")
+            self.wfile.write(f"Content-Length: {len(r.content)}\r\n".encode())
+            self.wfile.write(f"Date: {self.date_time_string()}\r\n".encode())
+            self.wfile.write(b"Connection: close\r\n")
             self.wfile.write(b"\r\n")
             
-            # 4. Write the body and log it as HEX
-            raw_body = r.content
-            logger.info(f"Body HEX: {raw_body.hex(':')}")
-            self.wfile.write(raw_body)
+            self.wfile.write(r.content)
             self.wfile.flush()
 
         except Exception as e:
