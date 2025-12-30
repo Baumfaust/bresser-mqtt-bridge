@@ -175,51 +175,25 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
-        global last_get_time, retry_count
+        """Transparently forward the request to the real server to keep cloud features working."""
         try:
-            current_time = time.time()
-            is_get_request = "/api/v01/get" in self.path
-
-            if is_get_request:
-                logger.info(f"FORECAST request detected: {self.path}")
-                time_diff = current_time - last_get_time
-                # Reset retry counter if it's a new 30-min cycle
-                if time_diff > 300: 
-                    retry_count = 1
-                else:
-                    retry_count += 1
-                
-                last_get_time = current_time
-
-                if retry_count >= 3:
-                    logger.error(f"ALERT: Station rejected forecast {retry_count} times!")
-                    self._send_ha_alert("Problem")
-                else:
-                    self._send_ha_alert("OK")
-
-            # Fetch from real server
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
+            logger.debug(f"Relay Response Status: {r.status_code}")
+            logger.debug(f"Relay Response Body: {r.content}")            
+            self.send_response(r.status_code)
             
-            # Prepare the response body
-            # We ensure it's binary and get the exact length
-            response_data = r.content
-            data_len = len(response_data)
-
-            # Build the response manually to ensure no 'chunked' encoding is used
-            self.protocol_version = 'HTTP/1.1'
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.send_header('Content-Length', str(data_len))
-            self.send_header('Date', self.date_time_string())
-            self.send_header('Server', 'envoy') # Mimic the original server
-            self.send_header('Connection', 'close')
+            for key, value in r.headers.items():
+                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
+                    self.send_header(key, value)
+            
+            self.send_header('Content-Length', str(len(r.content)))
             self.end_headers()
-            
-            # Send body
-            self.wfile.write(response_data)
-            self.wfile.flush()
-            
-            logger.info(f"Relay done. Sent {data_len} bytes. Retries: {retry_count if is_get_request else 'N/A'}")
+            self.wfile.write(r.content)
+        except Exception as e:
+            logger.error(f"Relay error (Cloud unreachable?): {e}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
 
         except Exception as e:
             logger.error(f"Relay failed: {e}")
