@@ -7,6 +7,7 @@ Features: Persistent MQTT, HA Auto-Discovery, and Extended Sensor Mapping.
 
 import http.server
 import ssl
+import time
 import urllib.parse
 import json
 import logging
@@ -26,6 +27,10 @@ MQTT_PASS = os.getenv('MQTT_PASS', None)
 DISCOVERY_PREFIX = os.getenv('DISCOVERY_PREFIX', 'homeassistant')
 REAL_SERVER_URL = "https://api.proweatherlive.net"
 CERT_FILE = "/app/certs/server.pem"
+
+# Global variables to track sync status
+last_get_time = 0
+retry_count = 0
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -174,24 +179,42 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         Relays the request to the official ProWeatherLive server
         and returns the response to the weather station with cleaned headers.
         """
+        global last_get_time, retry_count
+        
         try:
-            # Perform the GET request to the official API
-            # Timeout is set to 10s to ensure the station doesn't hang on slow responses
+            # 1. Update logging level and capture request time
+            current_time = time.time()
+            # Log the request at INFO level as requested
+            logger.info(f"Station requested forecast: {self.path}")
+
+            # 2. Monitor retry pattern (Burst of 3 requests within ~120 seconds)
+            time_diff = current_time - last_get_time
+            if time_diff < 120:
+                retry_count += 1
+            else:
+                retry_count = 1 # Reset if last request was long ago
+            
+            last_get_time = current_time
+
+            # 3. Trigger Alert if 3 failed attempts are detected
+            if retry_count >= 3:
+                logger.error("ALERT: Station rejected forecast 3 times in a row!")
+                self._send_ha_alert("Problem")
+            else:
+                # Clear alert on normal intervals (first request of a cycle)
+                if retry_count == 1:
+                    self._send_ha_alert("OK")
+
+            # 4. Standard relay logic
             r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
             logger.debug(f"Relay Response Status: {r.status_code}")
-            logger.debug(f"Relay Response Body: {r.content}")            
-            # Mirror the HTTP status code (usually 200)
+            logger.debug(f"Relay Response Body: {r.content}")  
             self.send_response(r.status_code)
-            
-            # Explicitly set headers for IOT hardware compatibility.
-            # Microcontrollers often require a fixed Content-Length and will fail
-            # if 'Transfer-Encoding: chunked' is used.
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.send_header('Content-Length', str(len(r.content)))
             self.send_header('Connection', 'close')
             self.end_headers()
             
-            # Send the raw binary content back to the weather station
             self.wfile.write(r.content)
             
             logger.debug(f"Relay successful: Sent {len(r.content)} bytes to station")
@@ -202,6 +225,18 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
+
+    def _send_ha_alert(self, status):
+        """
+        Sends a status update to MQTT to notify Home Assistant about sync issues.
+        """
+        try:
+            topic = "bresser/bridge/sync_status"
+            # status is either "Problem" or "OK"
+            mqtt_bridge.publish(topic, status, retain=True)
+            logger.info(f"MQTT Alert sent: {status} to {topic}")
+        except Exception as e:
+            logger.error(f"Failed to send MQTT alert: {e}")
 
     def log_message(self, format, *args): return
 
