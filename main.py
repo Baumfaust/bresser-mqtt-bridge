@@ -176,26 +176,54 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _relay(self):
         """
-        Test version: Sending a hardcoded minimal response to see if station stops retrying.
+        Relays the request to the official ProWeatherLive server.
+        Logs the original headers and body for deep inspection.
         """
+        global last_get_time, retry_count
         try:
-            # We define a very basic, clean response string based on your previous logs
-            # but with fixed timestamps.
-            test_payload = b"blig=%20&bligts=&bligte=&dssmrs=&dsatramxmnt=&ltdcd=2025-12-30T18%3A00%3A00W2&lon=8.3313&lat=49.7080&sunrisecd=08%3A23&sunsetcd=16%3A34"
+            current_time = time.time()
+            logger.info(f"Incoming station request: {self.path}")
+
+            # Monitor the 3-retry pattern
+            time_diff = current_time - last_get_time
+            if time_diff < 120:
+                retry_count += 1
+            else:
+                retry_count = 1
+            last_get_time = current_time
+
+            if retry_count >= 3:
+                logger.error("ALERT: Station rejected forecast 3 times!")
+                self._send_ha_alert("Problem")
+            elif retry_count == 1:
+                self._send_ha_alert("OK")
+
+            # 1. Get original response from real server
+            # We use stream=True to get the raw data
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
             
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.send_header('Content-Length', str(len(test_payload)))
-            self.send_header('Connection', 'close')
-            # Some devices expect a 'Server' header
-            self.send_header('Server', 'nginx/1.18.0') 
-            self.end_headers()
+            # 2. Log original headers for comparison
+            logger.info(f"Original PWL Headers: {dict(r.headers)}")
+
+            # 3. Use raw socket to send the response
+            # This prevents Python from adding its own headers
+            self.wfile.write(f"HTTP/1.1 {r.status_code} OK\r\n".encode())
             
-            self.wfile.write(test_payload)
-            logger.info("Sent HARDCODED test payload to station")
+            # Relay only essential headers from the original response
+            for header in ['Content-Type', 'Content-Length', 'Connection']:
+                if header in r.headers:
+                    self.wfile.write(f"{header}: {r.headers[header]}\r\n".encode())
+            
+            self.wfile.write(b"\r\n")
+            
+            # 4. Write the body and log it as HEX
+            raw_body = r.content
+            logger.info(f"Body HEX: {raw_body.hex(':')}")
+            self.wfile.write(raw_body)
+            self.wfile.flush()
 
         except Exception as e:
-            logger.error(f"Test Relay failed: {e}")
+            logger.error(f"Relay failed: {e}")
 
     def _send_ha_alert(self, status):
         """
