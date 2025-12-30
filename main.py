@@ -170,22 +170,35 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
-        """Transparently forward the request to the real server to keep cloud features working."""
+        """
+        Relays the request to the official ProWeatherLive server
+        and returns the response to the weather station with cleaned headers.
+        """
         try:
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
+            # Perform the GET request to the official API
+            # Timeout is set to 10s to ensure the station doesn't hang on slow responses
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
             logger.debug(f"Relay Response Status: {r.status_code}")
             logger.debug(f"Relay Response Body: {r.content}")            
+            # Mirror the HTTP status code (usually 200)
             self.send_response(r.status_code)
             
-            for key, value in r.headers.items():
-                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
-                    self.send_header(key, value)
-            
+            # Explicitly set headers for IOT hardware compatibility.
+            # Microcontrollers often require a fixed Content-Length and will fail
+            # if 'Transfer-Encoding: chunked' is used.
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.send_header('Content-Length', str(len(r.content)))
+            self.send_header('Connection', 'close')
             self.end_headers()
+            
+            # Send the raw binary content back to the weather station
             self.wfile.write(r.content)
+            
+            logger.debug(f"Relay successful: Sent {len(r.content)} bytes to station")
+            
         except Exception as e:
-            logger.error(f"Relay error (Cloud unreachable?): {e}")
+            logger.error(f"Relay failed: {e}")
+            # Send a basic 200 OK fallback to keep the station connection stable
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
