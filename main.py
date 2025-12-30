@@ -175,52 +175,56 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
         return res if 'station_id' in res else None
 
     def _relay(self):
-        """
-        Transparent relay: Streams data directly from the server to the station
-        without any modifications to headers or body.
-        """
-        global last_get_time, retry_count
         try:
-            current_time = time.time()
-            is_get_request = "/api/v01/get" in self.path
+            # Original-Request möglichst unverändert weiterleiten
+            r = requests.get(
+                f"{REAL_SERVER_URL}{self.path}",
+                timeout=10,
+                headers={
+                    "User-Agent": self.headers.get("User-Agent", ""),
+                    "Accept": self.headers.get("Accept", "*/*"),
+                },
+                stream=True
+            )
 
-            # Maintain our alarm logic
-            if is_get_request:
-                time_diff = current_time - last_get_time
-                if time_diff > 300: retry_count = 1
-                else: retry_count += 1
-                last_get_time = current_time
-                
-                if retry_count >= 3:
-                    self._send_ha_alert("Problem")
-                else:
-                    self._send_ha_alert("OK")
+            # Exakten Statuscode übernehmen
+            self.send_response(r.status_code)
 
-            # 1. Open the connection to the real server as a stream
-            # We set stream=True to get access to the raw socket data
-            with requests.get(f"{REAL_SERVER_URL}{self.path}", stream=True, timeout=10) as r:
-                # 2. Send the original status code
-                self.send_response(r.status_code)
-                
-                # 3. Relay ALL original headers exactly as they came from the server
-                for header, value in r.headers.items():
-                    # We skip 'Transfer-Encoding' because Python's HTTPServer 
-                    # handles the chunking/sending logic internally
-                    if header.lower() not in ['transfer-encoding']:
-                        self.send_header(header, value)
-                self.end_headers()
+            # Header transparent durchreichen
+            for header, value in r.headers.items():
+                h = header.lower()
 
-                # 4. Stream the raw content directly to the station
-                # 'shutil' is great for piping one stream into another
-                import shutil
-                shutil.copyfileobj(r.raw, self.wfile)
+                # Diese Header dürfen NICHT weitergereicht werden
+                if h in (
+                    "transfer-encoding",   # chunked → killt die Firmware
+                    "content-encoding",    # gzip → Firmware kann das nicht
+                    "connection",          # wird von BaseHTTPRequestHandler gesetzt
+                ):
+                    continue
 
-            logger.info(f"Transparent relay finished for: {self.path}")
+                self.send_header(header, value)
+
+            self.end_headers()
+
+            # Body 1:1 senden
+            if r.content:
+                self.wfile.write(r.content)
+
+            self.wfile.flush()
+
+            logger.info(
+                f"Relay OK: {self.path} "
+                f"Status={r.status_code} "
+                f"Bytes={len(r.content)}"
+            )
 
         except Exception as e:
-            logger.error(f"Transparent relay failed: {e}")
-            self.send_response(500)
+            logger.error(f"Relay failed hard: {e}")
+
+            # Fallback: exakt so, wie echte Server es bei Fehlern tun
+            self.send_response(204)  # No Content
             self.end_headers()
+
 
     def _send_ha_alert(self, status):
         """
