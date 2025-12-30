@@ -176,55 +176,26 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _relay(self):
         """
-        Relays the request to the official ProWeatherLive server
-        and returns the response to the weather station with cleaned headers.
+        Test version: Sending a hardcoded minimal response to see if station stops retrying.
         """
-        global last_get_time, retry_count
-        
         try:
-            # 1. Update logging level and capture request time
-            current_time = time.time()
-            # Log the request at INFO level as requested
-            logger.info(f"Station requested forecast: {self.path}")
-
-            # 2. Monitor retry pattern (Burst of 3 requests within ~120 seconds)
-            time_diff = current_time - last_get_time
-            if time_diff < 120:
-                retry_count += 1
-            else:
-                retry_count = 1 # Reset if last request was long ago
+            # We define a very basic, clean response string based on your previous logs
+            # but with fixed timestamps.
+            test_payload = b"blig=%20&bligts=&bligte=&dssmrs=&dsatramxmnt=&ltdcd=2025-12-30T18%3A00%3A00W2&lon=8.3313&lat=49.7080&sunrisecd=08%3A23&sunsetcd=16%3A34"
             
-            last_get_time = current_time
-
-            # 3. Trigger Alert if 3 failed attempts are detected
-            if retry_count >= 3:
-                logger.error("ALERT: Station rejected forecast 3 times in a row!")
-                self._send_ha_alert("Problem")
-            else:
-                # Clear alert on normal intervals (first request of a cycle)
-                if retry_count == 1:
-                    self._send_ha_alert("OK")
-
-            # 4. Standard relay logic
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
-            logger.debug(f"Relay Response Status: {r.status_code}")
-            logger.debug(f"Relay Response Body: {r.content}")  
-            self.send_response(r.status_code)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.send_header('Content-Length', str(len(r.content)))
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            
-            self.wfile.write(r.content)
-            
-            logger.debug(f"Relay successful: Sent {len(r.content)} bytes to station")
-            
-        except Exception as e:
-            logger.error(f"Relay failed: {e}")
-            # Send a basic 200 OK fallback to keep the station connection stable
             self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(test_payload)))
+            self.send_header('Connection', 'close')
+            # Some devices expect a 'Server' header
+            self.send_header('Server', 'nginx/1.18.0') 
             self.end_headers()
-            self.wfile.write(b"OK")
+            
+            self.wfile.write(test_payload)
+            logger.info("Sent HARDCODED test payload to station")
+
+        except Exception as e:
+            logger.error(f"Test Relay failed: {e}")
 
     def _send_ha_alert(self, status):
         """
