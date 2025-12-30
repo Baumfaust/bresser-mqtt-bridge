@@ -180,42 +180,52 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
             current_time = time.time()
             is_get_request = "/api/v01/get" in self.path
 
-            # 1. Only track retries for FORECAST (get) requests
             if is_get_request:
                 logger.info(f"FORECAST request detected: {self.path}")
                 time_diff = current_time - last_get_time
-                if time_diff < 120:
-                    retry_count += 1
-                else:
+                # Reset retry counter if it's a new 30-min cycle
+                if time_diff > 300: 
                     retry_count = 1
+                else:
+                    retry_count += 1
+                
                 last_get_time = current_time
 
                 if retry_count >= 3:
-                    logger.error("ALERT: Station rejected forecast 3 times!")
+                    logger.error(f"ALERT: Station rejected forecast {retry_count} times!")
                     self._send_ha_alert("Problem")
-                elif retry_count == 1:
+                else:
                     self._send_ha_alert("OK")
-            else:
-                # Regular sensor data upload (set)
-                logger.info(f"Sensor data upload (set): {self.path}")
 
-            # 2. Fetch from real server
+            # Fetch from real server
             r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10)
             
-            # 3. Clean and Send Response
-            # IMPORTANT: We add the 'Date' header so the station can sync its clock!
-            self.wfile.write(f"HTTP/1.1 {r.status_code} OK\r\n".encode())
-            self.wfile.write(b"Content-Type: text/plain; charset=utf-8\r\n")
-            self.wfile.write(f"Content-Length: {len(r.content)}\r\n".encode())
-            self.wfile.write(f"Date: {self.date_time_string()}\r\n".encode())
-            self.wfile.write(b"Connection: close\r\n")
-            self.wfile.write(b"\r\n")
+            # Prepare the response body
+            # We ensure it's binary and get the exact length
+            response_data = r.content
+            data_len = len(response_data)
+
+            # Build the response manually to ensure no 'chunked' encoding is used
+            self.protocol_version = 'HTTP/1.1'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(data_len))
+            self.send_header('Date', self.date_time_string())
+            self.send_header('Server', 'envoy') # Mimic the original server
+            self.send_header('Connection', 'close')
+            self.end_headers()
             
-            self.wfile.write(r.content)
+            # Send body
+            self.wfile.write(response_data)
             self.wfile.flush()
+            
+            logger.info(f"Relay done. Sent {data_len} bytes. Retries: {retry_count if is_get_request else 'N/A'}")
 
         except Exception as e:
             logger.error(f"Relay failed: {e}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
 
     def _send_ha_alert(self, status):
         """
