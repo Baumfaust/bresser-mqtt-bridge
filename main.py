@@ -170,21 +170,22 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
                 logger.info(f"< Body Preview: {r.content[:100]}...")
             logger.info("--- 🔍 PROXY DEBUG END ---")
 
-            # --- ANTWORT AN STATION SENDEN ---
             self.send_response(r.status_code)
             
-            # Header spiegeln (Transfer-Encoding und Gzip-Header filtern)
+            # Header spiegeln
             for key, value in r.headers.items():
+                # WICHTIG: transfer-encoding MUSS raus, damit die Station 
+                # nicht auf die Hex-Chunks wartet, die wir gar nicht schicken.
                 if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
                     self.send_header(key, value)
             
-            # Sicherheits-Header und Tarnung (Envoy) setzen
-            self.send_header('Server', 'envoy')
+            # Wir berechnen die Länge des Inhalts EHRLICH und schicken sie mit
             self.send_header('Content-Length', str(len(r.content)))
+            self.send_header('Server', 'envoy')
             self.send_header('Connection', 'close')
             self.end_headers()
             
-            # Den Rohinhalt an die Station schreiben
+            # Den Rohinhalt senden
             self.wfile.write(r.content)
 
         except Exception as e:
