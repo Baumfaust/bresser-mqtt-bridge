@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Bresser-Local-Bridge v0.1
-Professional transparent proxy for Bresser 7-in-1 stations (Model 7003220).
-Features: Persistent MQTT, HA Auto-Discovery, and Extended Sensor Mapping.
+Bresser-Local-Bridge v0.2
+Professional transparent proxy with detailed response logging and TLS hardening.
+Features: Persistent MQTT, HA Auto-Discovery, and cURL-style Debugging.
 """
 
 import http.server
 import ssl
-import time
 import urllib.parse
 import json
 import logging
@@ -15,11 +14,9 @@ import os
 import sys
 import requests
 import paho.mqtt.client as mqtt
-import shutil
-
 
 # --- CONFIGURATION ---
-APP_VERSION = os.getenv('APP_VERSION', 'dev')
+APP_VERSION = os.getenv('APP_VERSION', '0.2-debug')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 MQTT_BROKER = os.getenv('MQTT_BROKER', '192.168.178.2')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
@@ -29,10 +26,6 @@ MQTT_PASS = os.getenv('MQTT_PASS', None)
 DISCOVERY_PREFIX = os.getenv('DISCOVERY_PREFIX', 'homeassistant')
 REAL_SERVER_URL = "https://api.proweatherlive.net"
 CERT_FILE = "/app/certs/server.pem"
-
-# Global variables to track sync status
-last_get_time = 0
-retry_count = 0
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -66,7 +59,6 @@ class WeatherMQTTClient:
         logger.warning("⚠️ MQTT: Disconnected. Trying to reconnect...")
 
     def start(self):
-        # Shortened keepalive (15s) to detect background drops faster
         self.client.connect_async(MQTT_BROKER, MQTT_PORT, 15)
         self.client.loop_start()
 
@@ -80,9 +72,8 @@ class WeatherMQTTClient:
 
 mqtt_bridge = WeatherMQTTClient()
 
-# --- AUTO DISCOVERY ---
+# --- HA AUTO DISCOVERY ---
 def send_discovery(client):
-    """Register all 7-in-1 sensors in Home Assistant."""
     sensors = [
         {"id": "indoor_temp", "name": "Indoor Temperature", "unit": "°C", "class": "temperature"},
         {"id": "indoor_humidity", "name": "Indoor Humidity", "unit": "%", "class": "humidity"},
@@ -112,58 +103,38 @@ def send_discovery(client):
                 "name": "Bresser Weather Station",
                 "sw_version": APP_VERSION,
                 "manufacturer": "Bresser",
-                "model": "7-in-1 Station 1(7003220)"
+                "model": "7-in-1 Station (7003220)"
             }
         }
         if s['unit']: payload["unit_of_measurement"] = s['unit']
         if s['class']: payload["device_class"] = s['class']
-
-        json_payload = json.dumps(payload)
-        client.publish(config_topic, json_payload, retain=True)
-        logger.debug(f"MQTT Discovery: Published topic: {config_topic} payload: {json_payload} ")
+        client.publish(config_topic, json.dumps(payload), retain=True)
     logger.info("📡 HA Discovery: Sensors registered")
 
 # --- PROXY HANDLER ---
 class BresserProxy(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1' # Erforderlich für saubere Header-Übertragung
+
     def do_GET(self):
-        # Parse incoming station data
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         data = self._parse(query)
 
         if data:
-            logger.info(f"Captured data for Station {data.get('station_id')}")
+            logger.info(f"📥 Captured data for Station {data.get('station_id')}")
             mqtt_bridge.publish(data)
 
-        # Relay to the official ProWeatherLive server
         self._relay()
 
     def _parse(self, params):
-        """Map Bresser query parameters to readable sensor names."""
-        # Note: Bresser often sends 'temp' instead of 'tp1tm' depending on firmware
         mapping = {
-            'tmi': 'indoor_temp',
-            'hui': 'indoor_humidity',
-            'relbi': 'pressure_rel',
-            'absbi': 'pressure_abs',
-            'temp': 'outdoor_temp', 
-            'hum': 'outdoor_humidity',
-            'tp1tm': 'outdoor_temp', 
-            'tp1hu': 'outdoor_humidity',
-            'tp1wdir': 'wind_direction', 
-            'wdir': 'wind_direction',
-            'tp1wsp': 'wind_speed', 
-            'wind': 'wind_speed',
-            'tp1wgu': 'wind_gust', 
-            'gust': 'wind_gust',
-            'tp1rinrte': 'rain_rate',
-            'rain': 'rain_rate',
-            'tp1rindaly': 'rain_daily', 
-            'dailyrain': 'rain_daily',
-            'tp1uvi': 'uv_index', 
-            'uv': 'uv_index',
-            'tp1sod': 'irradiance', 
-            'tp1bt': 'battery_ok', 
-            'wsid': 'station_id'
+            'tmi': 'indoor_temp', 'hui': 'indoor_humidity', 'relbi': 'pressure_rel',
+            'absbi': 'pressure_abs', 'temp': 'outdoor_temp', 'hum': 'outdoor_humidity',
+            'tp1tm': 'outdoor_temp', 'tp1hu': 'outdoor_humidity', 'tp1wdir': 'wind_direction',
+            'wdir': 'wind_direction', 'tp1wsp': 'wind_speed', 'wind': 'wind_speed',
+            'tp1wgu': 'wind_gust', 'gust': 'wind_gust', 'tp1rinrte': 'rain_rate',
+            'rain': 'rain_rate', 'tp1rindaly': 'rain_daily', 'dailyrain': 'rain_daily',
+            'tp1uvi': 'uv_index', 'uv': 'uv_index', 'tp1sod': 'irradiance',
+            'tp1bt': 'battery_ok', 'wsid': 'station_id'
         }
         res = {}
         for b_key, r_key in mapping.items():
@@ -173,68 +144,58 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
                     res[r_key] = float(val) if '.' in val else int(val)
                 except (ValueError, IndexError):
                     res[r_key] = params[b_key][0]
-
         return res if 'station_id' in res else None
-
 
     def _relay(self):
         """
-        Acts as a transparent pipe for GET (forecast) and 
-        intercepts SET (sensor data).
+        Interpretiert die Antwort des echten Servers und loggt sie im curl-Stil.
+        Verhindert Gzip-Probleme durch 'Accept-Encoding: identity'.
         """
         try:
-            # 1. HANDLING FORECAST (GET)
-            if "/api/v01/get" in self.path:
-                logger.info(f"Piping GET request to PWL: {self.path}")
-                
-                # We fetch the original response from the real server
-                # using stream=True to avoid loading everything into memory at once
-                with requests.get(f"{REAL_SERVER_URL}{self.path}", stream=True, timeout=10) as r:
-                    self.send_response(r.status_code)
-                    
-                    # Relay original headers from PWL
-                    for header, value in r.headers.items():
-                        if header.lower() not in ['transfer-encoding', 'content-encoding']:
-                            self.send_header(header, value)
-                    
-                    self.send_header('Connection', 'close')
-                    self.end_headers()
-                    
-                    # Copy the raw response body directly to the station
-                    # This ensures the binary content remains 100% untouched
-                    shutil.copyfileobj(r.raw, self.wfile)
-                return
+            # Wir erzwingen Klartext-Antworten für das Logging
+            req_headers = {'Accept-Encoding': 'identity'}
+            
+            # Request an den echten Server weiterleiten
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, headers=req_headers)
+            
+            # --- DETAILED CURL-STYLE LOGGING ---
+            logger.info("--- 🔍 PROXY DEBUG: RESPONSE FROM REAL SERVER ---")
+            logger.info(f"< HTTP/1.1 {r.status_code} {r.reason}")
+            for header, value in r.headers.items():
+                logger.info(f"< {header}: {value}")
+            
+            logger.info(f"< Body Length: {len(r.content)} bytes")
+            if len(r.content) > 0:
+                # Vorschau der Wetterdaten (Forecast)
+                logger.info(f"< Body Preview: {r.content[:100]}...")
+            logger.info("--- 🔍 PROXY DEBUG END ---")
 
-            # 2. HANDLING SENSOR DATA (SET)
-            if "/api/v01/set" in self.path:
-                # We don't need to relay SET requests to get the weather working.
-                # We just acknowledge locally so your bridge can parse the data.
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/plain; charset=utf-8')
-                self.send_header('Content-Length', '2')
-                self.send_header('Connection', 'close')
-                self.end_headers()
-                self.wfile.write(b"OK")
-                logger.info("Acknowledged sensor data locally.")
+            # --- ANTWORT AN STATION SENDEN ---
+            self.send_response(r.status_code)
+            
+            # Header spiegeln (Transfer-Encoding und Gzip-Header filtern)
+            for key, value in r.headers.items():
+                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
+                    self.send_header(key, value)
+            
+            # Sicherheits-Header und Tarnung (Envoy) setzen
+            self.send_header('Server', 'envoy')
+            self.send_header('Content-Length', str(len(r.content)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            
+            # Den Rohinhalt an die Station schreiben
+            self.wfile.write(r.content)
 
         except Exception as e:
-            logger.error(f"Relay logic failed: {e}")
+            logger.error(f"❌ Relay error: {e}")
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
 
-    def _send_ha_alert(self, status):
-        """
-        Sends a status update to MQTT to notify Home Assistant about sync issues.
-        """
-        try:
-            # status is either "Problem" or "OK"
-            mqtt_bridge.publish(status)
-            logger.info(f"MQTT Alert sent: {status}")
-        except Exception as e:
-            logger.error(f"Failed to send MQTT alert: {e}")
-
-    def log_message(self, format, *args): return
+    def log_message(self, format, *args):
+        # Unterdrückt Standard-Server-Logs für saubereren Output
+        return
 
 if __name__ == "__main__":
     if not os.path.exists(CERT_FILE):
@@ -243,29 +204,20 @@ if __name__ == "__main__":
 
     mqtt_bridge.start()
 
-    # Create the server first
     server = http.server.HTTPServer(('', 443), BresserProxy)
-
-    # Create a more robust SSL Context
+    
+    # SSL/TLS Härtung
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-
-    # FORCE TLS 1.2 or higher (prevents the "Downgrade" error in many stations)
+    # Zwinge TLS 1.2+ (verhindert Downgrade-Fehler)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-
-    # Use a more professional Cipher-String
-    # This covers most modern IoT devices without being "too weak"
-    ctx.set_ciphers('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:AES128-GCM-SHA256')
-
+    
+    # Cipher-Suites für maximale Kompatibilität bei hoher Sicherheit
+    ctx.set_ciphers('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:AES128-GCM-SHA256:ALL:@SECLEVEL=1')
+    
     ctx.load_cert_chain(CERT_FILE)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
 
-    # Wrap the socket
-    try:
-        server.socket = ctx.wrap_socket(server.socket, server_side=True)
-        logger.info("SSL/TLS Layer initialized (TLSv1.2+ forced)")
-    except Exception as e:
-        logger.error(f"Failed to wrap socket with SSL: {e}")
-
-    logger.info(f"🚀 Bresser Bridge v{APP_VERSION}: Listening for data...")
+    logger.info(f"🚀 Bresser Bridge v{APP_VERSION}: Listening on Port 443...")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
