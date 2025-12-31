@@ -148,48 +148,44 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _relay(self):
         """
-        Interpretiert die Antwort des echten Servers und loggt sie im curl-Stil.
-        Verhindert Gzip-Probleme durch 'Accept-Encoding: identity'.
+        Dumb Pipe Relay: Reicht Daten 1:1 durch (auch Gzip), ohne sie anzufassen.
         """
         try:
-            # Wir erzwingen Klartext-Antworten für das Logging
-            req_headers = {'Accept-Encoding': 'identity'}
+            # Wir geben KEIN Encoding vor. Requests soll akzeptieren, was der Server mag (meist Gzip).
+            # Wir nutzen stream=True, um die Rohdaten zu bekommen.
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
             
-            # Request an den echten Server weiterleiten
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, headers=req_headers)
-            
-            # --- DETAILED CURL-STYLE LOGGING ---
-            logger.info("--- 🔍 PROXY DEBUG: RESPONSE FROM REAL SERVER ---")
+            # --- LOGGING (Reduziert, da Daten binär sein können) ---
+            logger.info("--- 🔄 RELAY START ---")
             logger.info(f"< HTTP/1.1 {r.status_code} {r.reason}")
-            for header, value in r.headers.items():
-                logger.info(f"< {header}: {value}")
             
-            logger.info(f"< Body Length: {len(r.content)} bytes")
-            if len(r.content) > 0:
-                # Vorschau der Wetterdaten (Forecast)
-                logger.info(f"< Body Preview: {r.content[:100]}...")
-            logger.info("--- 🔍 PROXY DEBUG END ---")
-
+            # --- ANTWORT AN STATION SENDEN ---
             self.send_response(r.status_code)
             
-            # Header spiegeln
+            # Header spiegeln 
+            # WICHTIG: Wir lassen Content-Encoding DRIN, damit die Station weiß, dass es Gzip ist.
             for key, value in r.headers.items():
-                # WICHTIG: transfer-encoding MUSS raus, damit die Station 
-                # nicht auf die Hex-Chunks wartet, die wir gar nicht schicken.
-                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection']:
+                if key.lower() not in ['transfer-encoding', 'connection', 'content-length']:
                     self.send_header(key, value)
-            
-            # Wir berechnen die Länge des Inhalts EHRLICH und schicken sie mit
-            self.send_header('Content-Length', str(len(r.content)))
+                    logger.info(f"< {key}: {value}")
+
+            # Wir faken wieder den Envoy Server
             self.send_header('Server', 'envoy')
-            self.send_header('Connection', 'close')
+            # Wir erlauben Keep-Alive (Standard bei HTTP/1.1), also kein 'close' senden
+            
             self.end_headers()
             
-            # Den Rohinhalt senden
-            self.wfile.write(r.content)
+            # --- BODY DURCHLEITEN (RAW) ---
+            # Wir lesen den rohen Socket-Stream, um Gzip NICHT zu entpacken
+            raw_data = r.raw.read(decode_content=False)
+            
+            logger.info(f"< Raw Body Length: {len(raw_data)} bytes (Compressed/Binary)")
+            self.wfile.write(raw_data)
+            logger.info("--- 🔄 RELAY END ---")
 
         except Exception as e:
             logger.error(f"❌ Relay error: {e}")
+            # Fallback: Leeres OK senden, damit die Verbindung nicht hängt
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
