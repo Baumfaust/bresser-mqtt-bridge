@@ -148,44 +148,48 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
 
     def _relay(self):
         """
-        Dumb Pipe Relay: Reicht Daten 1:1 durch (auch Gzip), ohne sie anzufassen.
+        Smart Proxy: Erzwingt Klartext, berechnet korrekte Länge und schließt die Verbindung sauber.
         """
         try:
-            # Wir geben KEIN Encoding vor. Requests soll akzeptieren, was der Server mag (meist Gzip).
-            # Wir nutzen stream=True, um die Rohdaten zu bekommen.
-            r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
+            # 1. Wir zwingen den Server zu Klartext (identity), damit wir keine Kompressions-Probleme haben
+            req_headers = {
+                'Accept-Encoding': 'identity',
+                'User-Agent': self.headers.get('User-Agent', 'Bresser-Bridge'),
+                'Accept': '*/*'
+            }
             
-            # --- LOGGING (Reduziert, da Daten binär sein können) ---
-            logger.info("--- 🔄 RELAY START ---")
+            # Request an echten Server
+            r = requests.get(f"{REAL_SERVER_URL}{self.path}", headers=req_headers, timeout=10)
+            
+            content = r.content # Das sind die entpackten Rohdaten
+            length = len(content)
+
+            # --- LOGGING ---
+            logger.info("--- 🏁 RELAY START (Smart Mode) ---")
             logger.info(f"< HTTP/1.1 {r.status_code} {r.reason}")
+            logger.info(f"< Calculated Content-Length: {length}")
             
-            # --- ANTWORT AN STATION SENDEN ---
+            # --- ANTWORT AN STATION ---
             self.send_response(r.status_code)
             
-            # Header spiegeln 
-            # WICHTIG: Wir lassen Content-Encoding DRIN, damit die Station weiß, dass es Gzip ist.
+            # Wir spiegeln Header, aber filtern strikt alles, was die Länge oder das Ende betrifft
             for key, value in r.headers.items():
-                if key.lower() not in ['transfer-encoding', 'connection', 'content-length']:
+                if key.lower() not in ['transfer-encoding', 'content-encoding', 'content-length', 'connection', 'keep-alive']:
                     self.send_header(key, value)
-                    logger.info(f"< {key}: {value}")
 
-            # Wir faken wieder den Envoy Server
+            # Wir setzen die kritischen Header selbst
+            self.send_header('Content-Length', str(length))
+            self.send_header('Connection', 'close') # WICHTIG: Sagt der Station "Fertig!"
             self.send_header('Server', 'envoy')
-            # Wir erlauben Keep-Alive (Standard bei HTTP/1.1), also kein 'close' senden
             
             self.end_headers()
             
-            # --- BODY DURCHLEITEN (RAW) ---
-            # Wir lesen den rohen Socket-Stream, um Gzip NICHT zu entpacken
-            raw_data = r.raw.read(decode_content=False)
-            
-            logger.info(f"< Raw Body Length: {len(raw_data)} bytes (Compressed/Binary)")
-            self.wfile.write(raw_data)
-            logger.info("--- 🔄 RELAY END ---")
+            # Daten senden
+            self.wfile.write(content)
+            logger.info("--- 🏁 RELAY END ---")
 
         except Exception as e:
             logger.error(f"❌ Relay error: {e}")
-            # Fallback: Leeres OK senden, damit die Verbindung nicht hängt
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
