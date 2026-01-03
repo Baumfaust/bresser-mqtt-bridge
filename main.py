@@ -167,7 +167,7 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
             for key, value in r.headers.items():
                 if key.lower() not in ['transfer-encoding', 'connection', 'content-length']:
                     self.send_header(key, value)
-                    logger.info(f"< {key}: {value}")
+                    logger.debug(f"< {key}: {value}")
 
             # Wir faken wieder den Envoy Server
             self.send_header('Server', 'envoy')
@@ -179,9 +179,9 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
             # Wir lesen den rohen Socket-Stream, um Gzip NICHT zu entpacken
             raw_data = r.raw.read(decode_content=False)
             
-            logger.info(f"< Raw Body Length: {len(raw_data)} bytes (Compressed/Binary)")
+            logger.debug(f"< Raw Body Length: {len(raw_data)} bytes (Compressed/Binary)")
             self.wfile.write(raw_data)
-            logger.info("--- 🔄 RELAY END ---")
+            logger.debug("--- 🔄 RELAY END ---")
 
         except Exception as e:
             logger.error(f"❌ Relay error: {e}")
