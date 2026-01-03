@@ -156,8 +156,8 @@ class BresserProxy(http.server.BaseHTTPRequestHandler):
             r = requests.get(f"{REAL_SERVER_URL}{self.path}", timeout=10, stream=True)
             
             # --- LOGGING (Reduziert, da Daten binär sein können) ---
-            logger.info("--- 🔄 RELAY START ---")
-            logger.info(f"< HTTP/1.1 {r.status_code} {r.reason}")
+            logger.debug("--- 🔄 RELAY START ---")
+            logger.debug(f"< HTTP/1.1 {r.status_code} {r.reason}")
             
             # --- ANTWORT AN STATION SENDEN ---
             self.send_response(r.status_code)
